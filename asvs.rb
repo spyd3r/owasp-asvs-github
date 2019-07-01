@@ -1,12 +1,27 @@
 #!/usr/bin/env ruby
 require 'octokit'
 require 'sqlite3'
+require 'fileutils'
+
+if ARGV.length != 3
+	puts "Missing or invalid arguments: asvs.rb <project_name> <verification_level> <path_to_clone_repo>"
+	puts "Example: asvs.rb asvs-graphql 2 /home/bobdobs/projects/"
+	exit
+end
+
+project = ARGV[0]
+project_level = ARGV[1]
+repo_path = ARGV[2]
+
+# create directory path from repo_path argument if it doesn't already exist
+if not File.directory? repo_path
+	FileUtils.mkdir_p repo_path
+end
 
 # docs - http://octokit.github.io/octokit.rb/Octokit/Client
 
 ACCESS_TOKEN = ENV['GITHUB_PERSONAL_ACCESS_TOKEN']
 
-Octokit.default_media_type = "application/vnd.github.inertia-preview+json"
 client = Octokit::Client.new(:access_token => ACCESS_TOKEN)
 client.auto_paginate = true
 
@@ -15,7 +30,7 @@ db = SQLite3::Database.new('asvs.db')
 
 # create repository - http://octokit.github.io/octokit.rb/Octokit/Client/Repositories.html
 puts "Creating repository..."
-repository = client.create_repository('asvs-test')
+repository = client.create_repository(project)
 
 # create milestones
 milestones = {
@@ -36,7 +51,7 @@ milestones = {
 }
 puts "Creating milestones..."
 milestones.each do | title, desc |
-	client.create_milestone('spyd3r/asvs-test', title, {:description => desc})
+	client.create_milestone(repository.full_name, title, {:description => desc})
 end
 
 # create milestone hash with :title => milestone_id
@@ -48,6 +63,7 @@ end
 # create issues
 puts "Creating issues..."
 issues = db.execute('SELECT * FROM ISSUES')
+issue_metadata = {}
 issues.each do | issue |
 	issue_id = issue[0]
 	issue_section = issue[1]
@@ -55,12 +71,13 @@ issues.each do | issue |
 	issue_weight = issue[3]
 	issue_milestone = issue[4]
 	issue_title = issue[5]
-	client.create_issue(repository.full_name, issue_title, nil, {:milestone => issue_milestone.to_i <= 2 ? milestones[issue_milestone] : nil, :labels => "#{issue_section},#{issue_id},Level #{issue_level}"})
+	issue = client.create_issue(repository.full_name, issue_title, nil, {:milestone => issue_milestone.to_i <= project_level.to_i ? milestones[issue_milestone] : nil, :labels => "#{issue_section},#{issue_id},Level #{issue_level}"})
+	issue_metadata[issue.id] = {} 
+	issue_metadata[issue.id]["section"] = issue_section
+	issue_metadata[issue.id]["level"] = issue_level
 end
 
-issues = client.list_issues(repository.full_name)
-
-# create project boards
+# create project boards and project cards
 puts "Creating project boards..."
 boards = db.execute('SELECT * FROM BOARDS')
 boards.each do | board |
@@ -78,30 +95,57 @@ boards.each do | board |
 		column_label_map[section][column.name] = column.id
 	end
 	# create project cards for each board by label
-	issues.each do | issue |
-		labels = client.labels_for_issue(repository.full_name, issue.number)
-		labels = labels.select{|x| x}.map{|y| y["name"]}
-		level = nil
-		labels.each do | label |
-			if label.include? "Level"
-				level = label.split("Level ")[1].to_i
-			end
-			if label.include? section
-				case level
-				when 1
-					puts "Creating level 1 issue"
-					client.create_project_card(column_label_map[section]["Level 1"], content_id: issue.id, content_type: 'Issue')
-				when 2
-					puts "Creating level 2 issue"
-					client.create_project_card(column_label_map[section]["Level 2"], content_id: issue.id, content_type: 'Issue')
-				when 3
-					puts "Creating level 3 issue"
-					client.create_project_card(column_label_map[section]["Level 3"], content_id: issue.id, content_type: 'Issue')
-				else
-					puts "Level: #{level}"
-					puts "Not creating a board card"
-				end
+	issue_metadata.each do | issue_id, issue_data |
+		level = issue_data["level"]
+		issue_section = issue_data["section"]
+		if issue_section.eql? section
+			case level
+			when 1
+				client.create_project_card(column_label_map[section]["Level 1"], content_id: issue_id, content_type: 'Issue')
+			when 2
+				client.create_project_card(column_label_map[section]["Level 2"], content_id: issue_id, content_type: 'Issue')
+			when 3
+				client.create_project_card(column_label_map[section]["Level 3"], content_id: issue_id, content_type: 'Issue')
+			else
+				puts "Not creating a board card"
 			end
 		end
 	end
 end
+
+# map milestone titles to their URLs
+project_milestones = client.milestones(repository.full_name)
+milestones = {}
+project_milestones.each do | milestone |
+	milestones[milestone.title] = milestone.html_url
+end
+
+# change directory to repo_path
+Dir.chdir repo_path
+system("git clone #{repository.clone_url}")
+Dir.chdir repo_path + repository.clone_url.split('/')[-1].split('.')[0]
+
+readme_lines = ["[Architecture, Design and Threat Modeling Verification Requirements](#{milestones['Architecture, Design and Threat Modeling Verification Requirements']})\r\n\r\n",
+                "[Authentication Verification Requirements](#{milestones['Authentication Verification Requirements']})\r\n\r\n",
+                "[Session Management Verification Requirements](#{milestones['Session Management Verification Requirements']})\r\n\r\n",
+                "[Access Control Verification Requirements](#{milestones['Access Control Verification Requirements']})\r\n\r\n",
+                "[Validation, Sanitization and Encoding Verification Requirements](#{milestones['Validation, Sanitization and Encoding Verification Requirements']})\r\n\r\n",
+                "[Stored Cryptography Verification Requirements](#{milestones['Stored Cryptography Verification Requirements']})\r\n\r\n",
+                "[Error Handling and Logging Verification Requirements](#{milestones['Error Handling and Logging Verification Requirements']})\r\n\r\n",
+                "[Data Protection Verification Requirements](#{milestones['Data Protection Verification Requirements']})\r\n\r\n",
+                "[Communications Verification Requirements](#{milestones['Communications Verification Requirements']})\r\n\r\n",
+                "[Malicious Code Verification Requirements](#{milestones['Malicious Code Verification Requirements']})\r\n\r\n",
+                "[Business Logic Verification Requirements](#{milestones['Business Logic Verification Requirements']})\r\n\r\n",
+                "[Files and Resources Verification Requirements](#{milestones['Files and Resources Verification Requirements']})\r\n\r\n",
+                "[API and Web Service Verification Requirements](#{milestones['API and Web Service Verification Requirements']})\r\n\r\n",
+                "[Configuration Verification Requirements](#{milestones['Configuration Verification Requirements']})\r\n\r\n"
+        ]
+
+File.open('README.md', 'w') do | f |
+	readme_lines.each { |line| f.puts line }
+end
+
+system('git add README.md')
+system('git commit -m "Initial commit"')
+system('git push origin master')
+print("Project is ready. Access it at: #{repository.html_url}\r\n")
