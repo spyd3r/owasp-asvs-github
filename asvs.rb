@@ -1,7 +1,12 @@
 #!/usr/bin/env ruby
+$LOAD_PATH << '.'
 require 'octokit'
 require 'sqlite3'
 require 'fileutils'
+require 'milestones'
+require 'cwe'
+
+include CWE
 
 if ARGV.length != 3
 	puts "Missing or invalid arguments: asvs.rb <project_name> <verification_level> <path_to_clone_repo>"
@@ -69,9 +74,16 @@ issues.each do | issue |
 	issue_section = issue[1]
 	issue_level = issue[2]
 	issue_weight = issue[3]
-	issue_milestone = issue[4]
-	issue_title = issue[5]
-	issue = client.create_issue(repository.full_name, issue_title, nil, {:milestone => issue_milestone.to_i <= project_level.to_i ? milestones[issue_milestone] : nil, :labels => "#{issue_section},#{issue_id},Level #{issue_level}"})
+	issue_cwe = issue[4]
+	issue_milestone = issue[5]
+	issue_title = issue[6]
+	unless issue_cwe == "-1"
+		cwe = CWE.const_get(issue_cwe.upcase)
+		description = "For additional information on this requirement, see [#{cwe[:title]}](#{cwe[:link]})"
+	else
+		description = nil
+	end
+	issue = client.create_issue(repository.full_name, issue_title, description, {:milestone => issue_milestone.to_i <= project_level.to_i ? milestones[issue_milestone] : nil, :labels => "#{issue_section},#{issue_id},Level #{issue_level}"})
 	issue_metadata[issue.id] = {} 
 	issue_metadata[issue.id]["section"] = issue_section
 	issue_metadata[issue.id]["level"] = issue_level
